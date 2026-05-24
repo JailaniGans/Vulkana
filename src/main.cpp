@@ -1,16 +1,51 @@
-/**
- * Vulkana - Titik masuk engine game.
- */
+// Entry point - turunkan Application dan jalankan Engine
+
+#include "core/Engine.hpp"
 #include "core/Application.hpp"
 #include "core/Log.hpp"
+#include "core/Input.hpp"
+#include "ecs/Systems.hpp"
+#include <GLFW/glfw3.h>
 
-int main(int argc, char** argv) {
-    Log::init();
-    Log::info("Vulkana Engine v0.1.0 dimulai...");
+// ==================================================================
+// Contoh aplikasi sederhana
+// ==================================================================
+class MyApp : public Vulkana::Application
+{
+public:
+    void onInit() override
+    {
+        LOG_INFO("Aplikasi Vulkana dimulai");
+    }
 
-    Application app;
-    app.run();
+    void onUpdate(float dt) override
+    {
+        (void)dt;
 
-    Log::info("Vulkana Engine selesai");
+        if (Vulkana::Input::isKeyPressed(GLFW_KEY_ESCAPE))
+        {
+            LOG_INFO("ESC ditekan, keluar");
+        }
+    }
+
+    void onRender() override
+    {
+        // Render dihandle oleh Engine -> Renderer
+    }
+
+    void onCleanup() override
+    {
+        LOG_INFO("Aplikasi Vulkana ditutup");
+    }
+};
+
+// ==================================================================
+// main
+// ==================================================================
+int main()
+{
+    MyApp app;
+    Vulkana::Engine engine(app);
+    engine.run();
     return 0;
 }

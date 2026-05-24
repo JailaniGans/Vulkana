@@ -1,29 +1,31 @@
 #pragma once
 
+// Window - bungkus GLFW, callback resize, sediakan extension Vulkan
+
+#include <string_view>
+#include <vector>
+
 struct GLFWwindow;
 
-/**
- * Window - Abstraksi jendela OS menggunakan GLFW.
- */
+namespace Vulkana {
+
 class Window {
 public:
-    Window();
+    Window(int width, int height, std::string_view title);
     ~Window();
 
-    bool create(int width, int height, const char* title);
-    void destroy();
     bool shouldClose() const;
-    GLFWwindow* getHandle() const;
-    int getWidth() const;
-    int getHeight() const;
-    bool wasResized() const;
-    void resetResizedFlag();
+    void pollEvents() const;
+    void getFramebufferSize(int& width, int& height) const;
 
-private:
-    GLFWwindow* m_window;
-    int m_width;
-    int m_height;
-    bool m_framebufferResized;
+    GLFWwindow* getHandle() const { return m_window; }
+    std::vector<const char*> getRequiredExtensions() const;
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+    static bool resized;
+
+private:
+    GLFWwindow* m_window = nullptr;
 };
+
+}

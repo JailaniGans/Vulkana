@@ -1,276 +1,228 @@
 #include "renderer/Context.hpp"
-#include "core/Window.hpp"
 #include "core/Log.hpp"
-
-#include <cstring>
+#include <GLFW/glfw3.h>
+#include <cassert>
 #include <vector>
 
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
+namespace Vulkana {
 
-#ifdef NDEBUG
-static constexpr bool s_aktifkanValidation = false;
-#else
-static constexpr bool s_aktifkanValidation = true;
-#endif
-
-static const char* s_layerValidasi[] = {
-    "VK_LAYER_KHRONOS_validation"
-};
-
-static const char* s_ekstensiPerangkat[] = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME
-};
-
-Context::Context()
-    : m_instance(VK_NULL_HANDLE)
-    , m_surface(VK_NULL_HANDLE)
-    , m_physicalDevice(VK_NULL_HANDLE)
-    , m_device(VK_NULL_HANDLE)
-    , m_graphicsQueue(VK_NULL_HANDLE)
-    , m_presentQueue(VK_NULL_HANDLE)
-    , m_graphicsFamily(0)
-    , m_presentFamily(0)
-    , m_allocator(VK_NULL_HANDLE)
-    , m_window(nullptr)
+// ------------------------------------------------------------------
+// Callback debug messenger validation layer
+// ------------------------------------------------------------------
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+    VkDebugUtilsMessageTypeFlagsEXT,
+    const VkDebugUtilsMessengerCallbackDataEXT* data,
+    void*)
 {
+    if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+        LOG_ERROR(data->pMessage);
+    return VK_FALSE;
 }
 
-Context::~Context() {
+Context::~Context()
+{
     cleanup();
 }
 
-bool Context::init(Window* window) {
-    m_window = window;
-    Log::info("Context menginisialisasi...");
+// ------------------------------------------------------------------
+// init - inisialisasi Volk, instance, debug, GPU, device, VMA
+// ------------------------------------------------------------------
+void Context::init(GLFWwindow* window)
+{
+    // Load Vulkan loader via Volk
+    VkResult result = volkInitialize();
+    assert(result == VK_SUCCESS && "Gagal load Vulkan loader");
 
-    // --- Instance ---
-    VkApplicationInfo infoApp{};
-    infoApp.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    infoApp.pApplicationName = "Vulkana";
-    infoApp.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
-    infoApp.pEngineName = "Vulkana Engine";
-    infoApp.engineVersion = VK_MAKE_VERSION(0, 1, 0);
-    infoApp.apiVersion = VK_API_VERSION_1_3;
+    // Vulkan instance
+    VkApplicationInfo appInfo{};
+    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    appInfo.pApplicationName = "Vulkana";
+    appInfo.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
+    appInfo.pEngineName = "Vulkana";
+    appInfo.engineVersion = VK_MAKE_VERSION(0, 1, 0);
+    appInfo.apiVersion = VK_API_VERSION_1_3;
 
-    uint32_t jumlahEkstensiGLFW = 0;
-    const char** ekstensiGLFW = glfwGetRequiredInstanceExtensions(&jumlahEkstensiGLFW);
+    uint32_t glfwCount = 0;
+    const char** glfwExts = glfwGetRequiredInstanceExtensions(&glfwCount);
+    std::vector<const char*> exts(glfwExts, glfwExts + glfwCount);
+    exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
-    VkInstanceCreateInfo infoBuat{};
-    infoBuat.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    infoBuat.pApplicationInfo = &infoApp;
-    infoBuat.enabledExtensionCount = jumlahEkstensiGLFW;
-    infoBuat.ppEnabledExtensionNames = ekstensiGLFW;
+    std::vector<const char*> layers;
+#ifdef _DEBUG
+    layers.push_back("VK_LAYER_KHRONOS_validation");
+#endif
 
-    if (s_aktifkanValidation) {
-        Log::info("Layer validasi diaktifkan");
-        infoBuat.enabledLayerCount = 1;
-        infoBuat.ppEnabledLayerNames = s_layerValidasi;
+    VkInstanceCreateInfo instInfo{};
+    instInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    instInfo.pApplicationInfo = &appInfo;
+    instInfo.enabledExtensionCount = (uint32_t)exts.size();
+    instInfo.ppEnabledExtensionNames = exts.data();
+    instInfo.enabledLayerCount = (uint32_t)layers.size();
+    instInfo.ppEnabledLayerNames = layers.data();
+
+    result = vkCreateInstance(&instInfo, nullptr, &m_instance);
+    assert(result == VK_SUCCESS && "Gagal buat instance Vulkan");
+
+    volkLoadInstance(m_instance);
+    LOG_INFO("Instance Vulkan dibuat");
+
+    // Debug messenger
+    VkDebugUtilsMessengerCreateInfoEXT dbgInfo{};
+    dbgInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    dbgInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
+                            | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    dbgInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
+                        | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+                        | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    dbgInfo.pfnUserCallback = debugCallback;
+
+    auto createDbg = (PFN_vkCreateDebugUtilsMessengerEXT)
+        vkGetInstanceProcAddr(m_instance, "vkCreateDebugUtilsMessengerEXT");
+    if (createDbg)
+    {
+        createDbg(m_instance, &dbgInfo, nullptr, &m_debugMessenger);
+        LOG_INFO("Debug messenger aktif");
     }
 
-    VkResult hasil = vkCreateInstance(&infoBuat, nullptr, &m_instance);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal membuat instance Vulkan");
-        return false;
-    }
-    Log::info("Instance Vulkan dibuat");
+    // Pilih GPU & buat device
+    pickPhysicalDevice();
+    createDevice();
 
-    // --- Surface (butuh window + instance) ---
-    VkWin32SurfaceCreateInfoKHR infoPermukaan{};
-    infoPermukaan.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-    infoPermukaan.hwnd = glfwGetWin32Window(window->getHandle());
-    infoPermukaan.hinstance = GetModuleHandle(nullptr);
+    volkLoadDevice(m_device);
+    LOG_INFO("Device Vulkan siap");
 
-    hasil = vkCreateWin32SurfaceKHR(m_instance, &infoPermukaan, nullptr, &m_surface);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal membuat surface");
-        return false;
-    }
-    Log::info("Surface dibuat di Context");
+    // VMA allocator dengan function pointer dari Volk
+    VmaVulkanFunctions vf{};
+    vf.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+    vf.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+    vf.vkGetPhysicalDeviceProperties = vkGetPhysicalDeviceProperties;
+    vf.vkGetPhysicalDeviceMemoryProperties = vkGetPhysicalDeviceMemoryProperties;
+    vf.vkAllocateMemory = vkAllocateMemory;
+    vf.vkFreeMemory = vkFreeMemory;
+    vf.vkMapMemory = vkMapMemory;
+    vf.vkUnmapMemory = vkUnmapMemory;
+    vf.vkFlushMappedMemoryRanges = vkFlushMappedMemoryRanges;
+    vf.vkInvalidateMappedMemoryRanges = vkInvalidateMappedMemoryRanges;
+    vf.vkBindBufferMemory = vkBindBufferMemory;
+    vf.vkBindImageMemory = vkBindImageMemory;
+    vf.vkGetBufferMemoryRequirements = vkGetBufferMemoryRequirements;
+    vf.vkGetImageMemoryRequirements = vkGetImageMemoryRequirements;
+    vf.vkCreateBuffer = vkCreateBuffer;
+    vf.vkDestroyBuffer = vkDestroyBuffer;
+    vf.vkCreateImage = vkCreateImage;
+    vf.vkDestroyImage = vkDestroyImage;
+    vf.vkCmdCopyBuffer = vkCmdCopyBuffer;
+    vf.vkGetBufferMemoryRequirements2KHR = vkGetBufferMemoryRequirements2;
+    vf.vkGetImageMemoryRequirements2KHR = vkGetImageMemoryRequirements2;
+    vf.vkBindBufferMemory2KHR = vkBindBufferMemory2;
+    vf.vkBindImageMemory2KHR = vkBindImageMemory2;
+    vf.vkGetPhysicalDeviceMemoryProperties2KHR = vkGetPhysicalDeviceMemoryProperties2;
+    vf.vkGetDeviceBufferMemoryRequirements = vkGetDeviceBufferMemoryRequirements;
+    vf.vkGetDeviceImageMemoryRequirements = vkGetDeviceImageMemoryRequirements;
 
-    // --- Pilih GPU (sekarang punya surface untuk cek present) ---
-    if (!pickPhysicalDevice()) {
-        Log::error("Tidak ada GPU yang sesuai");
-        return false;
-    }
+    VmaAllocatorCreateInfo ai{};
+    ai.vulkanApiVersion = VK_API_VERSION_1_3;
+    ai.physicalDevice = m_physicalDevice;
+    ai.device = m_device;
+    ai.instance = m_instance;
+    ai.pVulkanFunctions = &vf;
 
-    // --- Perangkat logis ---
-    float prioritasQueue = 1.0f;
-    std::vector<VkDeviceQueueCreateInfo> infoQueueBuat;
-    uint32_t familyUnik[] = { m_graphicsFamily, m_presentFamily };
-
-    for (uint32_t family : familyUnik) {
-        bool sudahAda = false;
-        for (const auto& q : infoQueueBuat) {
-            if (q.queueFamilyIndex == family) {
-                sudahAda = true;
-                break;
-            }
-        }
-        if (!sudahAda) {
-            VkDeviceQueueCreateInfo qci{};
-            qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-            qci.queueFamilyIndex = family;
-            qci.queueCount = 1;
-            qci.pQueuePriorities = &prioritasQueue;
-            infoQueueBuat.push_back(qci);
-        }
-    }
-
-    VkDeviceCreateInfo infoPerangkat{};
-    infoPerangkat.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    infoPerangkat.queueCreateInfoCount = static_cast<uint32_t>(infoQueueBuat.size());
-    infoPerangkat.pQueueCreateInfos = infoQueueBuat.data();
-    infoPerangkat.enabledExtensionCount = 1;
-    infoPerangkat.ppEnabledExtensionNames = s_ekstensiPerangkat;
-
-    VkPhysicalDeviceFeatures fiturPerangkat{};
-    infoPerangkat.pEnabledFeatures = &fiturPerangkat;
-
-    hasil = vkCreateDevice(m_physicalDevice, &infoPerangkat, nullptr, &m_device);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal membuat perangkat logis");
-        return false;
-    }
-    Log::info("Perangkat logis dibuat");
-
-    vkGetDeviceQueue(m_device, m_graphicsFamily, 0, &m_graphicsQueue);
-    vkGetDeviceQueue(m_device, m_presentFamily, 0, &m_presentQueue);
-
-    // --- VMA ---
-    VmaAllocatorCreateInfo infoAlokator{};
-    infoAlokator.vulkanApiVersion = VK_API_VERSION_1_3;
-    infoAlokator.physicalDevice = m_physicalDevice;
-    infoAlokator.device = m_device;
-    infoAlokator.instance = m_instance;
-
-    hasil = vmaCreateAllocator(&infoAlokator, &m_allocator);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal membuat VMA allocator");
-        return false;
-    }
-    Log::info("VMA allocator dibuat");
-
-    return true;
+    result = vmaCreateAllocator(&ai, &m_allocator);
+    assert(result == VK_SUCCESS && "Gagal buat VMA allocator");
+    LOG_INFO("VMA allocator siap");
 }
 
-void Context::cleanup() {
-    if (m_allocator != VK_NULL_HANDLE) {
-        vmaDestroyAllocator(m_allocator);
-        m_allocator = VK_NULL_HANDLE;
+void Context::cleanup()
+{
+    if (m_allocator)        vmaDestroyAllocator(m_allocator);
+    if (m_device)            vkDestroyDevice(m_device, nullptr);
+    if (m_debugMessenger)
+    {
+        auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)
+            vkGetInstanceProcAddr(m_instance, "vkDestroyDebugUtilsMessengerEXT");
+        if (func) func(m_instance, m_debugMessenger, nullptr);
     }
-    if (m_device != VK_NULL_HANDLE) {
-        vkDestroyDevice(m_device, nullptr);
-        m_device = VK_NULL_HANDLE;
-    }
-    if (m_surface != VK_NULL_HANDLE && m_instance != VK_NULL_HANDLE) {
-        vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
-        m_surface = VK_NULL_HANDLE;
-    }
-    if (m_instance != VK_NULL_HANDLE) {
-        vkDestroyInstance(m_instance, nullptr);
-        m_instance = VK_NULL_HANDLE;
-    }
+    if (m_instance)          vkDestroyInstance(m_instance, nullptr);
 }
 
-bool Context::isDeviceSuitable(VkPhysicalDevice device) {
-    if (!findQueueFamilies(device)) return false;
+// ------------------------------------------------------------------
+// pickPhysicalDevice - pilih GPU discrete, fallback ke GPU pertama
+// ------------------------------------------------------------------
+void Context::pickPhysicalDevice()
+{
+    uint32_t count = 0;
+    vkEnumeratePhysicalDevices(m_instance, &count, nullptr);
+    std::vector<VkPhysicalDevice> devices(count);
+    vkEnumeratePhysicalDevices(m_instance, &count, devices.data());
 
-    uint32_t jumlahEkstensi = 0;
-    vkEnumerateDeviceExtensionProperties(device, nullptr, &jumlahEkstensi, nullptr);
-    std::vector<VkExtensionProperties> ekstensiTersedia(jumlahEkstensi);
-    vkEnumerateDeviceExtensionProperties(device, nullptr, &jumlahEkstensi, ekstensiTersedia.data());
+    for (auto& dev : devices)
+    {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(dev, &props);
 
-    for (const char* diminta : s_ekstensiPerangkat) {
-        bool ditemukan = false;
-        for (const auto& ext : ekstensiTersedia) {
-            if (strcmp(diminta, ext.extensionName) == 0) {
-                ditemukan = true;
-                break;
-            }
+        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+        {
+            m_physicalDevice = dev;
+            LOG_INFO(("GPU: " + std::string(props.deviceName)).c_str());
+            return;
         }
-        if (!ditemukan) return false;
     }
 
-    return true;
+    if (!devices.empty())
+    {
+        m_physicalDevice = devices[0];
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(m_physicalDevice, &props);
+        LOG_INFO(("GPU (fallback): " + std::string(props.deviceName)).c_str());
+    }
+
+    assert(m_physicalDevice != VK_NULL_HANDLE && "Tidak ada GPU Vulkan");
 }
 
-bool Context::findQueueFamilies(VkPhysicalDevice device) {
-    uint32_t jumlahFamily = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &jumlahFamily, nullptr);
-    std::vector<VkQueueFamilyProperties> daftarFamily(jumlahFamily);
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &jumlahFamily, daftarFamily.data());
+// ------------------------------------------------------------------
+// createDevice - buat logical device dengan queue graphics
+// ------------------------------------------------------------------
+void Context::createDevice()
+{
+    uint32_t count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &count, nullptr);
+    std::vector<VkQueueFamilyProperties> queues(count);
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &count, queues.data());
 
-    m_graphicsFamily = UINT32_MAX;
-    m_presentFamily = UINT32_MAX;
-
-    for (uint32_t i = 0; i < jumlahFamily; i++) {
-        // Cari graphics
-        if (daftarFamily[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-            m_graphicsFamily = i;
-        }
-        // Cari present (butuh surface)
-        if (m_surface != VK_NULL_HANDLE) {
-            VkBool32 dukunganPresent = false;
-            vkGetPhysicalDeviceSurfaceSupportKHR(device, i, m_surface, &dukunganPresent);
-            if (dukunganPresent) {
-                m_presentFamily = i;
-            }
+    for (uint32_t i = 0; i < count; i++)
+    {
+        if (queues[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+        {
+            m_graphicsIndex = i;
+            break;
         }
     }
+    assert(m_graphicsIndex != UINT32_MAX && "Tidak ada queue graphics");
 
-    // Fallback: jika present tidak ditemukan, pakai graphics
-    if (m_presentFamily == UINT32_MAX) {
-        m_presentFamily = m_graphicsFamily;
-    }
+    float priority = 1.0f;
+    VkDeviceQueueCreateInfo qi{};
+    qi.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    qi.queueFamilyIndex = m_graphicsIndex;
+    qi.queueCount = 1;
+    qi.pQueuePriorities = &priority;
 
-    return m_graphicsFamily != UINT32_MAX;
+    const char* devExts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+
+    VkPhysicalDeviceFeatures features{};
+
+    VkDeviceCreateInfo di{};
+    di.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    di.queueCreateInfoCount = 1;
+    di.pQueueCreateInfos = &qi;
+    di.enabledExtensionCount = 1;
+    di.ppEnabledExtensionNames = devExts;
+    di.pEnabledFeatures = &features;
+
+    VkResult result = vkCreateDevice(m_physicalDevice, &di, nullptr, &m_device);
+    assert(result == VK_SUCCESS && "Gagal buat device");
+
+    vkGetDeviceQueue(m_device, m_graphicsIndex, 0, &m_graphicsQueue);
 }
 
-bool Context::pickPhysicalDevice() {
-    uint32_t jumlahPerangkat = 0;
-    vkEnumeratePhysicalDevices(m_instance, &jumlahPerangkat, nullptr);
-    if (jumlahPerangkat == 0) {
-        Log::error("Tidak ada GPU yang mendukung Vulkan");
-        return false;
-    }
-
-    std::vector<VkPhysicalDevice> perangkatTersedia(jumlahPerangkat);
-    vkEnumeratePhysicalDevices(m_instance, &jumlahPerangkat, perangkatTersedia.data());
-
-    int skorTerbaik = -1;
-    VkPhysicalDevice perangkatTerbaik = VK_NULL_HANDLE;
-
-    for (const auto& perangkat : perangkatTersedia) {
-        if (!isDeviceSuitable(perangkat)) continue;
-
-        VkPhysicalDeviceProperties properti;
-        vkGetPhysicalDeviceProperties(perangkat, &properti);
-
-        int skor = 0;
-        if (properti.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-            skor += 1000;
-        }
-
-        if (skor > skorTerbaik) {
-            skorTerbaik = skor;
-            perangkatTerbaik = perangkat;
-        }
-    }
-
-    if (perangkatTerbaik == VK_NULL_HANDLE) {
-        Log::error("Tidak ada GPU yang sesuai");
-        return false;
-    }
-
-    m_physicalDevice = perangkatTerbaik;
-
-    VkPhysicalDeviceProperties properti;
-    vkGetPhysicalDeviceProperties(m_physicalDevice, &properti);
-    Log::info("GPU terpilih: ");
-    Log::info(properti.deviceName);
-
-    return true;
 }

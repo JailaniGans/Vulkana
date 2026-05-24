@@ -1,17 +1,19 @@
 #pragma once
 
-class Engine;
+// Application - kelas dasar abstrak untuk aplikasi pengguna
+//   Turunkan kelas ini dan override callback:
+//     onInit(), onUpdate(dt), onRender(), onCleanup()
 
-/**
- * Application - Tingkat atas aplikasi. Membuat dan memiliki Engine.
- */
+namespace Vulkana {
+
 class Application {
 public:
-    Application();
-    ~Application();
+    virtual ~Application() = default;
 
-    void run();
-
-private:
-    Engine* m_engine;
+    virtual void onInit() = 0;
+    virtual void onUpdate(float deltaTime) = 0;
+    virtual void onRender() = 0;
+    virtual void onCleanup() = 0;
 };
+
+}

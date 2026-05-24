@@ -1,21 +1,36 @@
 #pragma once
 
-struct GLFWwindow;
+// Input - state keyboard & mouse dari callback GLFW
+//   Panggil Input::update() setiap akhir frame
 
-/**
- * Input - Penangan input keyboard dan mouse via GLFW.
- */
+#include <array>
+#include <cstdint>
+
+namespace Vulkana {
+
+struct MousePosition {
+    double x = 0.0;
+    double y = 0.0;
+};
+
 class Input {
 public:
-    Input();
-    ~Input();
+    static void keyCallback(int key, int scancode, int action, int mods);
+    static void mouseButtonCallback(int button, int action, int mods);
+    static void cursorPosCallback(double xpos, double ypos);
 
-    void init(GLFWwindow* window);
-    void poll();
-    bool isKeyPressed(int key) const;
-    void getMousePos(double& x, double& y) const;
-    bool isMouseButtonPressed(int button) const;
+    static bool isKeyPressed(int key);
+    static bool isMouseButtonPressed(int button);
+    static MousePosition mousePosition();
+    static MousePosition mouseDelta();
+
+    static void endFrame();
 
 private:
-    GLFWwindow* m_window;
+    static std::array<bool, 512> s_keys;
+    static std::array<bool, 8> s_mouseButtons;
+    static MousePosition s_pos;
+    static MousePosition s_delta;
 };
+
+}

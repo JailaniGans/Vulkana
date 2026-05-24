@@ -3,6 +3,6 @@ build/
 *.obj
 *.exe
 *.log
-*.spv
 .DS_Store
 Thumbs.db
+!src/shaders/*.spv

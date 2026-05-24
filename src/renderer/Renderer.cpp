@@ -1,353 +1,208 @@
 #include "renderer/Renderer.hpp"
 #include "renderer/Context.hpp"
 #include "renderer/Swapchain.hpp"
-#include "core/Window.hpp"
 #include "core/Log.hpp"
+#include <cassert>
+#include <algorithm>
 
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
+namespace Vulkana {
 
-Renderer::Renderer()
-    : m_context(nullptr)
-    , m_swapchain(nullptr)
-    , m_window(nullptr)
-    , m_renderPass(VK_NULL_HANDLE)
-    , m_commandPool(VK_NULL_HANDLE)
-    , m_currentFrame(0)
+Renderer::~Renderer()
 {
-}
-
-Renderer::~Renderer() {
     cleanup();
 }
 
-bool Renderer::init(Window* window) {
-    m_window = window;
-    Log::info("Renderer menginisialisasi...");
+// ------------------------------------------------------------------
+// init - buat command pool, command buffers, sync objects
+// ------------------------------------------------------------------
+void Renderer::init(Context& context, Swapchain& swapchain)
+{
+    cleanup();
 
-    m_context = new Context();
-    if (!m_context->init(m_window)) {
-        Log::error("Renderer: Gagal inisialisasi Context");
-        return false;
-    }
+    m_context = &context;
+    m_swapchain = &swapchain;
+    m_device = context.device();
+    m_currentImage = 0;
 
-    m_swapchain = new Swapchain();
-    if (!m_swapchain->buatSurfaceSwapchain(m_context, m_window)) {
-        Log::error("Renderer: Gagal membuat surface/swapchain");
-        return false;
-    }
-
-    if (!buatRenderPass(m_swapchain->getImageFormat())) return false;
-
-    if (!m_swapchain->buatFramebuffers(m_renderPass)) {
-        Log::error("Renderer: Gagal membuat framebuffer");
-        return false;
-    }
-
-    if (!buatSyncObjects(m_swapchain->getImageCount())) return false;
-    if (!buatCommandPool()) return false;
-    if (!buatCommandBuffers()) return false;
-
-    Log::info("Renderer berhasil diinisialisasi");
-    return true;
+    createCommandPool();
+    createCommandBuffers();
+    createSyncObjects();
+    LOG_INFO("Renderer siap");
 }
 
-bool Renderer::beginFrame(uint32_t& imageIndex, VkCommandBuffer& cmdBuffer) {
-    // Tunggu GPU frame sebelumnya selesai
-    vkWaitForFences(m_context->getDevice(), 1,
-                    &m_fenceDalamProses[m_currentFrame], VK_TRUE, UINT64_MAX);
-    vkResetFences(m_context->getDevice(), 1,
-                  &m_fenceDalamProses[m_currentFrame]);
+void Renderer::cleanup()
+{
+    if (m_device == VK_NULL_HANDLE) return;
 
-    // Akuisisi gambar — pakai fence agar tidak perlu semaphore per image
-    // (menghindari VUID-vkQueueSubmit-pSignalSemaphores-00067)
-    VkResult hasil = vkAcquireNextImageKHR(m_context->getDevice(),
-                                            m_swapchain->getSwapchain(),
-                                            UINT64_MAX,
-                                            VK_NULL_HANDLE,
-                                            m_fenceDalamProses[m_currentFrame],
-                                            &imageIndex);
+    vkDeviceWaitIdle(m_device);
 
-    if (hasil == VK_ERROR_OUT_OF_DATE_KHR || hasil == VK_SUBOPTIMAL_KHR) {
-        int lebar = 0, tinggi = 0;
-        glfwGetFramebufferSize(m_window->getHandle(), &lebar, &tinggi);
-        if (lebar == 0 || tinggi == 0) return false;
+    for (auto& fence : m_inFlightFence)
+        if (fence) vkDestroyFence(m_device, fence, nullptr);
+    for (auto& sem : m_imageAvailable)
+        if (sem) vkDestroySemaphore(m_device, sem, nullptr);
+    for (auto& sem : m_renderFinished)
+        if (sem) vkDestroySemaphore(m_device, sem, nullptr);
 
-        vkDeviceWaitIdle(m_context->getDevice());
-        if (m_swapchain->recreate(m_renderPass)) {
-            vkFreeCommandBuffers(m_context->getDevice(), m_commandPool,
-                                 static_cast<uint32_t>(m_commandBuffers.size()),
-                                 m_commandBuffers.data());
-            buatCommandBuffers();
-            // Re-alokasi semaphore untuk jumlah image baru
-            uint32_t jumlahBaru = m_swapchain->getImageCount();
-            for (auto sem : m_semaphoreRenderSelesai)
-                vkDestroySemaphore(m_context->getDevice(), sem, nullptr);
-            m_semaphoreRenderSelesai.resize(jumlahBaru);
-            VkSemaphoreCreateInfo infoSem{};
-            infoSem.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-            for (uint32_t i = 0; i < jumlahBaru; i++)
-                vkCreateSemaphore(m_context->getDevice(), &infoSem, nullptr, &m_semaphoreRenderSelesai[i]);
-        }
-        return false;
-    } else if (hasil != VK_SUCCESS) {
-        Log::error("Gagal mengakuisisi gambar swapchain");
+    if (m_cmdPool)
+        vkDestroyCommandPool(m_device, m_cmdPool, nullptr);
+}
+
+// ------------------------------------------------------------------
+// beginFrame - acquire image, tunggu fence, mulai command buffer
+// ------------------------------------------------------------------
+bool Renderer::beginFrame()
+{
+    VkFence fence = m_inFlightFence[m_frameIndex];
+    vkWaitForFences(m_device, 1, &fence, VK_TRUE, UINT64_MAX);
+    vkResetFences(m_device, 1, &fence);
+
+    uint32_t imageIndex = 0;
+    VkResult res = vkAcquireNextImageKHR(
+        m_device, m_swapchain->handle(), UINT64_MAX,
+        m_imageAvailable[m_frameIndex], VK_NULL_HANDLE, &imageIndex);
+
+    if (res == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        // Akan di-handle oleh Engine
         return false;
     }
+    assert(res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR);
 
-    // Tunggu gambar benar-benar siap (fence dari acquire di atas)
-    vkWaitForFences(m_context->getDevice(), 1,
-                    &m_fenceDalamProses[m_currentFrame], VK_TRUE, UINT64_MAX);
-    vkResetFences(m_context->getDevice(), 1,
-                  &m_fenceDalamProses[m_currentFrame]);
+    m_currentImage = imageIndex;
 
-    // Mulai command buffer
-    cmdBuffer = m_commandBuffers[imageIndex];
+    // Reset & mulai command buffer
+    VkCommandBuffer cmd = m_cmdBufs[imageIndex];
+    vkResetCommandBuffer(cmd, 0);
 
-    VkCommandBufferBeginInfo infoMulai{};
-    infoMulai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    infoMulai.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+    VkCommandBufferBeginInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    vkResetCommandBuffer(cmdBuffer, 0);
-    vkBeginCommandBuffer(cmdBuffer, &infoMulai);
+    vkBeginCommandBuffer(cmd, &bi);
 
-    VkClearValue nilaiBersih[2]{};
-    nilaiBersih[0].color = {{0.1f, 0.1f, 0.2f, 1.0f}};
-    nilaiBersih[1].depthStencil = {1.0f, 0};
+    // Begin render pass
+    VkExtent2D extent = m_swapchain->extent();
+    VkRenderPassBeginInfo rp{};
+    rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rp.renderPass = m_swapchain->renderPass();
+    rp.framebuffer = m_swapchain->framebuffers()[imageIndex];
+    rp.renderArea.extent = extent;
 
-    VkRenderPassBeginInfo infoRP{};
-    infoRP.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    infoRP.renderPass = m_renderPass;
-    infoRP.framebuffer = m_swapchain->getFramebuffers()[imageIndex];
-    infoRP.renderArea.offset = {0, 0};
-    infoRP.renderArea.extent = m_swapchain->getExtent();
-    infoRP.clearValueCount = 2;
-    infoRP.pClearValues = nilaiBersih;
+    VkClearValue clears[2]{};
+    clears[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};
+    clears[1].depthStencil = {1.0f, 0};
+    rp.clearValueCount = 2;
+    rp.pClearValues = clears;
 
-    vkCmdBeginRenderPass(cmdBuffer, &infoRP, VK_SUBPASS_CONTENTS_INLINE);
-
-    VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width  = static_cast<float>(m_swapchain->getExtent().width);
-    viewport.height = static_cast<float>(m_swapchain->getExtent().height);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
-
-    VkRect2D scissor{};
-    scissor.offset = {0, 0};
-    scissor.extent = m_swapchain->getExtent();
-    vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
+    vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
 
     return true;
 }
 
-void Renderer::endFrame(uint32_t imageIndex, VkCommandBuffer cmdBuffer) {
-    vkCmdEndRenderPass(cmdBuffer);
-    vkEndCommandBuffer(cmdBuffer);
+// ------------------------------------------------------------------
+// endFrame - akhiri render pass, submit command buffer, present
+//   return false jika swapchain perlu direcreate
+// ------------------------------------------------------------------
+bool Renderer::endFrame()
+{
+    VkCommandBuffer cmd = m_cmdBufs[m_currentImage];
+    vkCmdEndRenderPass(cmd);
+    vkEndCommandBuffer(cmd);
 
-    // Submit — tidak perlu wait semaphore karena fence sudah menjamin
-    // image siap. Signal render selesai via semaphore per image.
-    VkPipelineStageFlags stageTunggu[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+    // Submit
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 
-    VkSubmitInfo infoSubmit{};
-    infoSubmit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    infoSubmit.waitSemaphoreCount = 0;
-    infoSubmit.pWaitSemaphores = nullptr;
-    infoSubmit.pWaitDstStageMask = stageTunggu;
-    infoSubmit.commandBufferCount = 1;
-    infoSubmit.pCommandBuffers = &cmdBuffer;
-    infoSubmit.signalSemaphoreCount = 1;
-    infoSubmit.pSignalSemaphores = &m_semaphoreRenderSelesai[imageIndex];
+    VkSubmitInfo si{};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = &m_imageAvailable[m_frameIndex];
+    si.pWaitDstStageMask = &waitStage;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    si.signalSemaphoreCount = 1;
+    si.pSignalSemaphores = &m_renderFinished[m_frameIndex];
 
-    VkResult hasil = vkQueueSubmit(m_context->getGraphicsQueue(), 1, &infoSubmit,
-                                   m_fenceDalamProses[m_currentFrame]);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal submit perintah");
-    }
+    VkResult res = vkQueueSubmit(m_context->graphicsQueue(), 1, &si,
+                                  m_inFlightFence[m_frameIndex]);
+    assert(res == VK_SUCCESS && "Gagal submit queue");
 
-    // Present — tunggu render selesai via semaphore image-specific
-    VkPresentInfoKHR infoPresent{};
-    infoPresent.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    infoPresent.waitSemaphoreCount = 1;
-    infoPresent.pWaitSemaphores = &m_semaphoreRenderSelesai[imageIndex];
-    VkSwapchainKHR swapchain = m_swapchain->getSwapchain();
-    infoPresent.swapchainCount = 1;
-    infoPresent.pSwapchains = &swapchain;
-    infoPresent.pImageIndices = &imageIndex;
+    // Present
+    VkSwapchainKHR swapchainHandle = m_swapchain->handle();
+    VkPresentInfoKHR pi{};
+    pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores = &m_renderFinished[m_frameIndex];
+    pi.swapchainCount = 1;
+    pi.pSwapchains = &swapchainHandle;
+    pi.pImageIndices = &m_currentImage;
 
-    hasil = vkQueuePresentKHR(m_context->getPresentQueue(), &infoPresent);
-    if (hasil == VK_ERROR_OUT_OF_DATE_KHR || hasil == VK_SUBOPTIMAL_KHR) {
-        // beginFrame akan handle recreate
-    }
+    res = vkQueuePresentKHR(m_context->graphicsQueue(), &pi);
 
-    m_currentFrame = (m_currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+    m_frameIndex = (m_frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
+
+    return (res != VK_ERROR_OUT_OF_DATE_KHR && res != VK_SUBOPTIMAL_KHR);
 }
 
-void Renderer::waitIdle() {
-    if (m_context && m_context->getDevice() != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(m_context->getDevice());
+// ------------------------------------------------------------------
+// drawIndexed - record draw call ke command buffer aktif
+// ------------------------------------------------------------------
+void Renderer::drawIndexed(uint32_t indexCount, uint32_t instanceCount)
+{
+    VkCommandBuffer cmd = m_cmdBufs[m_currentImage];
+    vkCmdDrawIndexed(cmd, indexCount, instanceCount, 0, 0, 0);
+}
+
+// ------------------------------------------------------------------
+// createCommandPool
+// ------------------------------------------------------------------
+void Renderer::createCommandPool()
+{
+    VkCommandPoolCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    ci.queueFamilyIndex = m_context->graphicsQueueIndex();
+    ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+
+    VkResult res = vkCreateCommandPool(m_device, &ci, nullptr, &m_cmdPool);
+    assert(res == VK_SUCCESS && "Gagal buat command pool");
+}
+
+// ------------------------------------------------------------------
+// createCommandBuffers - satu per image swapchain
+// ------------------------------------------------------------------
+void Renderer::createCommandBuffers()
+{
+    uint32_t count = (uint32_t)m_swapchain->images().size();
+    m_cmdBufs.resize(count);
+
+    VkCommandBufferAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    ai.commandPool = m_cmdPool;
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = count;
+
+    VkResult res = vkAllocateCommandBuffers(m_device, &ai, m_cmdBufs.data());
+    assert(res == VK_SUCCESS && "Gagal alokasi command buffers");
+}
+
+// ------------------------------------------------------------------
+// createSyncObjects - semaphore & fence
+// ------------------------------------------------------------------
+void Renderer::createSyncObjects()
+{
+    VkSemaphoreCreateInfo si{};
+    si.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkFenceCreateInfo fi{};
+    fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        VkResult r1 = vkCreateSemaphore(m_device, &si, nullptr, &m_imageAvailable[i]);
+        VkResult r2 = vkCreateSemaphore(m_device, &si, nullptr, &m_renderFinished[i]);
+        VkResult r3 = vkCreateFence(m_device, &fi, nullptr, &m_inFlightFence[i]);
+        assert(r1 == VK_SUCCESS && r2 == VK_SUCCESS && r3 == VK_SUCCESS);
     }
 }
 
-void Renderer::cleanup() {
-    waitIdle();
-
-    for (auto sem : m_semaphoreRenderSelesai)
-        vkDestroySemaphore(m_context->getDevice(), sem, nullptr);
-    for (auto fence : m_fenceDalamProses)
-        vkDestroyFence(m_context->getDevice(), fence, nullptr);
-
-    if (m_commandPool != VK_NULL_HANDLE) {
-        vkFreeCommandBuffers(m_context->getDevice(), m_commandPool,
-                             static_cast<uint32_t>(m_commandBuffers.size()),
-                             m_commandBuffers.data());
-        m_commandBuffers.clear();
-        vkDestroyCommandPool(m_context->getDevice(), m_commandPool, nullptr);
-        m_commandPool = VK_NULL_HANDLE;
-    }
-
-    delete m_swapchain; m_swapchain = nullptr;
-    if (m_renderPass != VK_NULL_HANDLE) {
-        vkDestroyRenderPass(m_context->getDevice(), m_renderPass, nullptr);
-        m_renderPass = VK_NULL_HANDLE;
-    }
-    delete m_context; m_context = nullptr;
-
-    Log::info("Renderer dibersihkan");
-}
-
-bool Renderer::buatRenderPass(VkFormat formatGambar) {
-    VkAttachmentDescription lampiranWarna{};
-    lampiranWarna.format = formatGambar;
-    lampiranWarna.samples = VK_SAMPLE_COUNT_1_BIT;
-    lampiranWarna.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    lampiranWarna.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    lampiranWarna.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    lampiranWarna.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    lampiranWarna.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    lampiranWarna.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-    VkAttachmentDescription lampiranDepth{};
-    lampiranDepth.format = VK_FORMAT_D32_SFLOAT;
-    lampiranDepth.samples = VK_SAMPLE_COUNT_1_BIT;
-    lampiranDepth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    lampiranDepth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    lampiranDepth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    lampiranDepth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    lampiranDepth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    lampiranDepth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkAttachmentReference refWarna{};
-    refWarna.attachment = 0; refWarna.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    VkAttachmentReference refDepth{};
-    refDepth.attachment = 1; refDepth.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &refWarna;
-    subpass.pDepthStencilAttachment = &refDepth;
-
-    VkSubpassDependency dependensi{};
-    dependensi.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependensi.dstSubpass = 0;
-    dependensi.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                              VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependensi.srcAccessMask = 0;
-    dependensi.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                              VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependensi.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                               VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-    VkAttachmentDescription lampiran[] = { lampiranWarna, lampiranDepth };
-
-    VkRenderPassCreateInfo infoRP{};
-    infoRP.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    infoRP.attachmentCount = 2;
-    infoRP.pAttachments = lampiran;
-    infoRP.subpassCount = 1;
-    infoRP.pSubpasses = &subpass;
-    infoRP.dependencyCount = 1;
-    infoRP.pDependencies = &dependensi;
-
-    VkResult hasil = vkCreateRenderPass(m_context->getDevice(), &infoRP, nullptr, &m_renderPass);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal membuat render pass");
-        return false;
-    }
-    Log::info("Render pass dibuat");
-    return true;
-}
-
-bool Renderer::buatCommandPool() {
-    VkCommandPoolCreateInfo infoPool{};
-    infoPool.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    infoPool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    infoPool.queueFamilyIndex = m_context->getGraphicsFamily();
-
-    VkResult hasil = vkCreateCommandPool(m_context->getDevice(), &infoPool, nullptr, &m_commandPool);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal membuat command pool");
-        return false;
-    }
-    Log::info("Command pool dibuat");
-    return true;
-}
-
-bool Renderer::buatCommandBuffers() {
-    m_commandBuffers.resize(m_swapchain->getFramebuffers().size());
-
-    VkCommandBufferAllocateInfo infoAlokasi{};
-    infoAlokasi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    infoAlokasi.commandPool = m_commandPool;
-    infoAlokasi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    infoAlokasi.commandBufferCount = static_cast<uint32_t>(m_commandBuffers.size());
-
-    VkResult hasil = vkAllocateCommandBuffers(m_context->getDevice(), &infoAlokasi, m_commandBuffers.data());
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal mengalokasikan command buffer");
-        return false;
-    }
-    Log::info("Command buffer dibuat");
-    return true;
-}
-
-bool Renderer::buatSyncObjects(uint32_t jumlahGambar) {
-    // Semaphore render-selesai per swapchain image — index dengan imageIndex
-    // Aman dari konflik reuse karena setiap image hanya dipresent sekali per siklus
-    m_semaphoreRenderSelesai.resize(jumlahGambar);
-
-    // Fence per frame in-flight (MAX_FRAMES_IN_FLIGHT)
-    m_fenceDalamProses.resize(MAX_FRAMES_IN_FLIGHT);
-
-    VkSemaphoreCreateInfo infoSem{};
-    infoSem.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-
-    for (uint32_t i = 0; i < jumlahGambar; i++) {
-        VkResult hasil = vkCreateSemaphore(m_context->getDevice(), &infoSem, nullptr,
-                                            &m_semaphoreRenderSelesai[i]);
-        if (hasil != VK_SUCCESS) {
-            Log::error("Gagal membuat semaphore render selesai");
-            return false;
-        }
-    }
-
-    VkFenceCreateInfo infoFence{};
-    infoFence.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    infoFence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        VkResult hasil = vkCreateFence(m_context->getDevice(), &infoFence, nullptr,
-                                        &m_fenceDalamProses[i]);
-        if (hasil != VK_SUCCESS) {
-            Log::error("Gagal membuat fence");
-            return false;
-        }
-    }
-
-    Log::info("Objek sinkronisasi dibuat");
-    return true;
 }

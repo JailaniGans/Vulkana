@@ -1,84 +1,149 @@
 #include "core/Engine.hpp"
 #include "core/Window.hpp"
 #include "core/Input.hpp"
-#include "core/Log.hpp"
+#include "core/Application.hpp"
+#include "renderer/Context.hpp"
+#include "renderer/Swapchain.hpp"
+#include "renderer/Renderer.hpp"
 #include "ecs/Systems.hpp"
-
-#define GLFW_INCLUDE_NONE
+#include "core/Log.hpp"
 #include <GLFW/glfw3.h>
+#include <cassert>
+#include <chrono>
 
-Engine::Engine()
-    : m_window(nullptr)
-    , m_input(nullptr)
-    , m_renderSystem(nullptr)
-    , m_physicsSystem(nullptr)
-    , m_lastTime(0.0f)
+namespace Vulkana {
+
+Engine::Engine(Application& app)
+    : m_app(app)
 {
 }
 
-Engine::~Engine() {
-    shutdown();
+Engine::~Engine()
+{
+    cleanup();
 }
 
-bool Engine::init() {
-    Log::info("Engine menginisialisasi...");
+// ------------------------------------------------------------------
+// init - buat window, context, swapchain, renderer
+// ------------------------------------------------------------------
+void Engine::init()
+{
+    m_window = std::make_unique<Window>(1280, 720, "Vulkana");
 
-    m_window = new Window();
-    if (!m_window->create(1280, 720, "Vulkana")) {
-        Log::error("Gagal membuat jendela");
-        return false;
-    }
+    // Register input callbacks ke GLFW window
+    GLFWwindow* handle = m_window->getHandle();
+    glfwSetKeyCallback(handle, [](GLFWwindow*, int k, int s, int a, int m) {
+        Input::keyCallback(k, s, a, m);
+    });
+    glfwSetMouseButtonCallback(handle, [](GLFWwindow*, int b, int a, int m) {
+        Input::mouseButtonCallback(b, a, m);
+    });
+    glfwSetCursorPosCallback(handle, [](GLFWwindow*, double x, double y) {
+        Input::cursorPosCallback(x, y);
+    });
 
-    m_input = new Input();
-    m_input->init(m_window->getHandle());
+    m_context = std::make_unique<Context>();
+    m_context->init(handle);
 
-    m_renderSystem = new RenderSystem();
-    if (!m_renderSystem->init(m_window)) {
-        Log::error("Gagal menginisialisasi sistem render");
-        return false;
-    }
+    // Buat surface dari GLFW window
+    VkResult res = glfwCreateWindowSurface(
+        m_context->instance(), handle, nullptr, &m_surface);
+    (void)res;
+    assert(res == VK_SUCCESS && "Gagal buat surface");
 
-    m_physicsSystem = new PhysicsSystem();
+    int w, h;
+    m_window->getFramebufferSize(w, h);
 
-    Log::info("Engine berhasil diinisialisasi");
-    return true;
+    m_swapchain = std::make_unique<Swapchain>();
+    m_swapchain->init(m_context->physicalDevice(), m_context->device(),
+                      m_surface, w, h);
+
+    m_renderer = std::make_unique<Renderer>();
+    m_renderer->init(*m_context, *m_swapchain);
+
+    LOG_INFO("Engine siap");
+    m_app.onInit();
 }
 
-void Engine::run() {
-    Log::info("Engine memulai game loop");
+void Engine::recreateSwapchain()
+{
+    int w = 0, h = 0;
+    m_window->getFramebufferSize(w, h);
+    if (w == 0 || h == 0) return;
 
-    m_lastTime = static_cast<float>(glfwGetTime());
-
-    while (!m_window->shouldClose()) {
-        float waktuSekarang = static_cast<float>(glfwGetTime());
-        float deltaTime = waktuSekarang - m_lastTime;
-        m_lastTime = waktuSekarang;
-
-        m_input->poll();
-        m_physicsSystem->update(m_registry, deltaTime);
-        m_renderSystem->update(m_registry);
-    }
-
-    m_renderSystem->waitIdle();
+    vkDeviceWaitIdle(m_context->device());
+    m_swapchain->recreate(w, h);
+    m_renderer->init(*m_context, *m_swapchain);
+    LOG_INFO("Swapchain direcreate");
 }
 
-void Engine::shutdown() {
-    Log::info("Engine mematikan...");
+void Engine::cleanup()
+{
+    if (m_context && m_context->device())
+        vkDeviceWaitIdle(m_context->device());
 
-    delete m_renderSystem;
-    m_renderSystem = nullptr;
+    m_app.onCleanup();
+    m_renderer.reset();
+    m_swapchain.reset();
 
-    delete m_physicsSystem;
-    m_physicsSystem = nullptr;
+    if (m_surface && m_context)
+        vkDestroySurfaceKHR(m_context->instance(), m_surface, nullptr);
 
-    delete m_input;
-    m_input = nullptr;
+    m_context.reset();
+    m_window.reset();
+}
 
-    if (m_window) {
-        m_window->destroy();
-        delete m_window;
-        m_window = nullptr;
+// ------------------------------------------------------------------
+// run - loop utama dengan delta time
+// ------------------------------------------------------------------
+void Engine::run()
+{
+    init();
+
+    auto lastTime = std::chrono::high_resolution_clock::now();
+
+    while (!m_window->shouldClose())
+    {
+        m_window->pollEvents();
+
+        // Hitung delta time
+        auto now = std::chrono::high_resolution_clock::now();
+        float dt = std::chrono::duration<float>(now - lastTime).count();
+        lastTime = now;
+
+        // Update
+        m_app.onUpdate(dt);
+        Systems::updateTransforms(dt);
+
+        // Cek resize window (from GLFW callback)
+        if (Window::resized)
+        {
+            Window::resized = false;
+            recreateSwapchain();
+            continue;
+        }
+
+        // Render
+        bool ok = m_renderer->beginFrame();
+        if (!ok)
+        {
+            // Swapchain out of date, recreate
+            recreateSwapchain();
+            continue;
+        }
+
+        m_app.onRender();
+        Systems::renderMeshes();
+
+        if (!m_renderer->endFrame())
+        {
+            Window::resized = false;
+            recreateSwapchain();
+        }
+        Input::endFrame();
     }
 
-    Log::info("Engine dimatikan");
+    cleanup();
+}
+
 }

@@ -1,39 +1,38 @@
 #pragma once
 
-#include <vulkan/vulkan.h>
+// Buffer - vertex, index, uniform buffer via VMA
+//   upload() buat staging + copy ke device local
+
+#include <volk.h>
 #include <vk_mem_alloc.h>
+#include <cstddef>
+#include <cstdint>
 
-class Context;
+namespace Vulkana {
 
-/**
- * Buffer - Abstraksi buffer Vulkan dengan alokasi VMA.
- * Mendukung device-local dan host-visible. Upload via staging.
- */
 class Buffer {
 public:
-    Buffer();
+    Buffer() = default;
     ~Buffer();
 
-    bool create(Context* context,
-                VkDeviceSize size,
-                VkBufferUsageFlags usage,
-                VmaMemoryUsage memoryUsage);
-    void destroy();
+    void init(VmaAllocator alloc, VkDeviceSize size,
+              VkBufferUsageFlags usage, VkMemoryPropertyFlags memFlags,
+              const void* data = nullptr);
+    void cleanup();
 
-    void upload(const void* data, VkDeviceSize size, VkDeviceSize offset = 0);
-    void uploadStaging(Context* context,
-                       const void* data,
-                       VkDeviceSize size,
-                       VkCommandPool commandPool,
-                       VkQueue queue);
+    void upload(const void* data, VkDeviceSize size);
+    void* map();
+    void unmap();
 
-    VkBuffer      getBuffer()    const { return m_buffer; }
-    VmaAllocation getAllocation() const { return m_allocation; }
-    VkDeviceSize  getSize()      const { return m_size; }
+    VkBuffer handle() const { return m_buffer; }
+    VmaAllocation allocation() const { return m_allocation; }
+    VkDeviceSize size() const { return m_size; }
 
 private:
-    Context*     m_context;
-    VkBuffer     m_buffer;
-    VmaAllocation m_allocation;
-    VkDeviceSize m_size;
+    VmaAllocator m_alloc = VK_NULL_HANDLE;
+    VkBuffer m_buffer = VK_NULL_HANDLE;
+    VmaAllocation m_allocation = VK_NULL_HANDLE;
+    VkDeviceSize m_size = 0;
 };
+
+}

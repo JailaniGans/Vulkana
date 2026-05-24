@@ -1,3 +1,6 @@
+// VMA - implementasi Vulkan Memory Allocator
+// volk.h harus sebelum vk_mem_alloc.h agar VMA pakai function pointer Volk
+
+#include <volk.h>
 #define VMA_IMPLEMENTATION
-#define VMA_STATIC_VULKAN_FUNCTIONS 1
 #include <vk_mem_alloc.h>

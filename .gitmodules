@@ -13,3 +13,6 @@
 [submodule "ext/entt"]
 	path = ext/entt
 	url = https://github.com/skypjack/entt.git
+[submodule "ext/Vulkan-Headers"]
+	path = ext/Vulkan-Headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers.git

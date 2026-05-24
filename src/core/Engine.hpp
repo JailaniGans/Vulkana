@@ -1,31 +1,39 @@
 #pragma once
 
-#include <entt/entt.hpp>
+// Engine - loop utama: inisialisasi, update, render, cleanup
+//   Hubungkan Window + Context + Swapchain + Renderer
+
+#include <memory>
+#include <volk.h>
+
+namespace Vulkana {
 
 class Window;
-class Input;
-class RenderSystem;
-class PhysicsSystem;
+class Context;
+class Swapchain;
+class Renderer;
+class Application;
 
-/**
- * Engine - Orkestrator inti game engine.
- * Memiliki Window, Input, ECS registry, dan sistem game.
- * Siklus hidup: init() -> run() -> shutdown()
- */
 class Engine {
 public:
-    Engine();
+    Engine(Application& app);
     ~Engine();
 
-    bool init();
     void run();
-    void shutdown();
 
 private:
-    Window*          m_window;
-    Input*           m_input;
-    entt::registry   m_registry;
-    RenderSystem*    m_renderSystem;
-    PhysicsSystem*   m_physicsSystem;
-    float            m_lastTime;
+    void init();
+    void cleanup();
+    void recreateSwapchain();
+
+    Application& m_app;
+    std::unique_ptr<Window> m_window;
+    std::unique_ptr<Context> m_context;
+    std::unique_ptr<Swapchain> m_swapchain;
+    std::unique_ptr<Renderer> m_renderer;
+
+    VkSurfaceKHR m_surface = VK_NULL_HANDLE;
+    float m_lastTime = 0.0f;
 };
+
+}

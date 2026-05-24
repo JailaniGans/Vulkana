@@ -1,31 +1,32 @@
 #pragma once
 
-#include <vulkan/vulkan.h>
+// Descriptor - helper untuk layout, pool, alokasi, update descriptor set
+
+#include <volk.h>
 #include <vector>
 
-class Context;
-class Buffer;
+namespace Vulkana {
 
-/**
- * Descriptor - Pengelola descriptor set Vulkan.
- * Layout, pool, dan alokasi set untuk uniform buffer.
- */
 class Descriptor {
 public:
-    Descriptor();
-    ~Descriptor();
+    static VkDescriptorSetLayout createLayout(
+        VkDevice device,
+        const std::vector<VkDescriptorSetLayoutBinding>& bindings);
 
-    bool create(Context* context, uint32_t maxFrames);
-    void destroy();
-    bool allocateSets(const std::vector<Buffer*>& uniformBuffers);
+    static VkDescriptorPool createPool(
+        VkDevice device,
+        uint32_t maxSets,
+        const std::vector<VkDescriptorPoolSize>& poolSizes);
 
-    VkDescriptorSetLayout getLayout() const { return m_layout; }
-    VkDescriptorSet       getSet(uint32_t index) const { return m_sets[index]; }
-    VkDescriptorPool      getPool()   const { return m_pool; }
+    static VkDescriptorSet allocate(
+        VkDevice device,
+        VkDescriptorPool pool,
+        VkDescriptorSetLayout layout);
 
-private:
-    Context*            m_context;
-    VkDescriptorSetLayout m_layout;
-    VkDescriptorPool    m_pool;
-    std::vector<VkDescriptorSet> m_sets;
+    static void update(
+        VkDevice device,
+        VkDescriptorSet set,
+        const std::vector<VkWriteDescriptorSet>& writes);
 };
+
+}

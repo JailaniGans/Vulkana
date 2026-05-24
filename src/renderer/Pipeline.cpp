@@ -1,233 +1,182 @@
 #include "renderer/Pipeline.hpp"
-#include "renderer/Context.hpp"
 #include "core/Log.hpp"
-
 #include <fstream>
 #include <cassert>
 
-Pipeline::Pipeline()
-    : m_context(nullptr)
-    , m_pipeline(VK_NULL_HANDLE)
-    , m_pipelineLayout(VK_NULL_HANDLE)
-    , m_modulVert(VK_NULL_HANDLE)
-    , m_modulFrag(VK_NULL_HANDLE)
+namespace Vulkana {
+
+Pipeline::~Pipeline()
 {
+    cleanup();
 }
 
-Pipeline::~Pipeline() {
-    destroy();
-}
-
-bool Pipeline::create(Context* context,
-                      VkExtent2D extent,
-                      VkRenderPass renderPass,
-                      VkDescriptorSetLayout descriptorSetLayout)
+// ------------------------------------------------------------------
+// init - baca SPIR-V, buat shader module, pipeline layout, pipeline
+// ------------------------------------------------------------------
+void Pipeline::init(VkDevice device, VkRenderPass renderPass,
+                    std::string_view vertPath, std::string_view fragPath,
+                    VkExtent2D extent)
 {
-    m_context = context;
-    VkDevice perangkat = context->getDevice();
+    m_device = device;
 
-    m_modulVert = buatShaderModule("build/scene.vert.spv");
-    if (m_modulVert == VK_NULL_HANDLE) {
-        Log::error("Gagal memuat vertex shader (build/scene.vert.spv)");
-        return false;
-    }
+    auto vertCode = readFile(vertPath);
+    auto fragCode = readFile(fragPath);
+    assert(!vertCode.empty() && !fragCode.empty() && "Shader file kosong");
 
-    m_modulFrag = buatShaderModule("build/scene.frag.spv");
-    if (m_modulFrag == VK_NULL_HANDLE) {
-        Log::error("Gagal memuat fragment shader (build/scene.frag.spv)");
-        return false;
-    }
-    Log::info("Modul shader dimuat");
+    VkShaderModule vertMod = createModule(vertCode);
+    VkShaderModule fragMod = createModule(fragCode);
 
-    VkPipelineLayoutCreateInfo infoLayout{};
-    infoLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    infoLayout.setLayoutCount = 1;
-    infoLayout.pSetLayouts = &descriptorSetLayout;
-    infoLayout.pushConstantRangeCount = 0;
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertMod;
+    stages[0].pName = "main";
 
-    VkResult hasil = vkCreatePipelineLayout(perangkat, &infoLayout, nullptr, &m_pipelineLayout);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal membuat pipeline layout");
-        return false;
-    }
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragMod;
+    stages[1].pName = "main";
 
-    VkPipelineShaderStageCreateInfo stageVert{};
-    stageVert.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stageVert.stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stageVert.module = m_modulVert;
-    stageVert.pName = "main";
+    // Vertex binding & attribute (pos vec3 + color vec3)
+    VkVertexInputBindingDescription binding{};
+    binding.binding = 0;
+    binding.stride = sizeof(float) * 6;
+    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    VkPipelineShaderStageCreateInfo stageFrag{};
-    stageFrag.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stageFrag.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stageFrag.module = m_modulFrag;
-    stageFrag.pName = "main";
+    VkVertexInputAttributeDescription attrs[2]{};
+    attrs[0].location = 0;
+    attrs[0].binding = 0;
+    attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attrs[0].offset = 0;
 
-    VkPipelineShaderStageCreateInfo stages[] = { stageVert, stageFrag };
+    attrs[1].location = 1;
+    attrs[1].binding = 0;
+    attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attrs[1].offset = sizeof(float) * 3;
 
-    VkVertexInputBindingDescription bindingDesc{};
-    bindingDesc.binding = 0;
-    bindingDesc.stride = 24;
-    bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vi.vertexBindingDescriptionCount = 1;
+    vi.pVertexBindingDescriptions = &binding;
+    vi.vertexAttributeDescriptionCount = 2;
+    vi.pVertexAttributeDescriptions = attrs;
 
-    VkVertexInputAttributeDescription attrDesc[2]{};
-    attrDesc[0].location = 0;
-    attrDesc[0].binding = 0;
-    attrDesc[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attrDesc[0].offset = 0;
-
-    attrDesc[1].location = 1;
-    attrDesc[1].binding = 0;
-    attrDesc[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attrDesc[1].offset = 12;
-
-    VkPipelineVertexInputStateCreateInfo inputVertex{};
-    inputVertex.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    inputVertex.vertexBindingDescriptionCount = 1;
-    inputVertex.pVertexBindingDescriptions = &bindingDesc;
-    inputVertex.vertexAttributeDescriptionCount = 2;
-    inputVertex.pVertexAttributeDescriptions = attrDesc;
-
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    inputAssembly.primitiveRestartEnable = VK_FALSE;
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
-    viewport.width = static_cast<float>(extent.width);
-    viewport.height = static_cast<float>(extent.height);
-    viewport.minDepth = 0.0f;
+    viewport.width  = (float)extent.width;
+    viewport.height = (float)extent.height;
     viewport.maxDepth = 1.0f;
 
     VkRect2D scissor{};
-    scissor.offset = {0, 0};
     scissor.extent = extent;
 
-    VkPipelineViewportStateCreateInfo viewportState{};
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.pViewports = &viewport;
-    viewportState.scissorCount = 1;
-    viewportState.pScissors = &scissor;
+    VkPipelineViewportStateCreateInfo vp{};
+    vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vp.viewportCount = 1;
+    vp.pViewports = &viewport;
+    vp.scissorCount = 1;
+    vp.pScissors = &scissor;
 
-    VkPipelineRasterizationStateCreateInfo rasterizer{};
-    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer.depthClampEnable = VK_FALSE;
-    rasterizer.rasterizerDiscardEnable = VK_FALSE;
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rasterizer.depthBiasEnable = VK_FALSE;
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_BACK_BIT;
+    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth = 1.0f;
 
-    VkPipelineMultisampleStateCreateInfo multisampling{};
-    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.sampleShadingEnable = VK_FALSE;
-    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    VkPipelineDepthStencilStateCreateInfo depthStencil{};
-    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = VK_TRUE;
-    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-    depthStencil.depthBoundsTestEnable = VK_FALSE;
-    depthStencil.stencilTestEnable = VK_FALSE;
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.depthTestEnable = VK_TRUE;
+    ds.depthWriteEnable = VK_TRUE;
+    ds.depthCompareOp = VK_COMPARE_OP_LESS;
 
-    VkPipelineColorBlendAttachmentState blendLampiran{};
-    blendLampiran.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
-                                   VK_COLOR_COMPONENT_G_BIT |
-                                   VK_COLOR_COMPONENT_B_BIT |
-                                   VK_COLOR_COMPONENT_A_BIT;
-    blendLampiran.blendEnable = VK_FALSE;
+    VkPipelineColorBlendAttachmentState blend{};
+    blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+                         | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
-    VkPipelineColorBlendStateCreateInfo colorBlending{};
-    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.logicOpEnable = VK_FALSE;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &blendLampiran;
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1;
+    cb.pAttachments = &blend;
 
-    VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-    VkPipelineDynamicStateCreateInfo dynamicState{};
-    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = 2;
-    dynamicState.pDynamicStates = dynamicStates;
+    // Push constant untuk MVP (3 mat4 = 144 byte)
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pcRange.offset = 0;
+    pcRange.size = sizeof(float) * 48; // 3 * 16 floats
 
-    VkGraphicsPipelineCreateInfo infoPipeline{};
-    infoPipeline.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    infoPipeline.stageCount = 2;
-    infoPipeline.pStages = stages;
-    infoPipeline.pVertexInputState = &inputVertex;
-    infoPipeline.pInputAssemblyState = &inputAssembly;
-    infoPipeline.pViewportState = &viewportState;
-    infoPipeline.pRasterizationState = &rasterizer;
-    infoPipeline.pMultisampleState = &multisampling;
-    infoPipeline.pDepthStencilState = &depthStencil;
-    infoPipeline.pColorBlendState = &colorBlending;
-    infoPipeline.pDynamicState = &dynamicState;
-    infoPipeline.layout = m_pipelineLayout;
-    infoPipeline.renderPass = renderPass;
-    infoPipeline.subpass = 0;
-    infoPipeline.basePipelineHandle = VK_NULL_HANDLE;
+    VkPipelineLayoutCreateInfo pl{};
+    pl.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pl.pushConstantRangeCount = 1;
+    pl.pPushConstantRanges = &pcRange;
 
-    hasil = vkCreateGraphicsPipelines(perangkat, VK_NULL_HANDLE, 1, &infoPipeline, nullptr, &m_pipeline);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal membuat graphics pipeline");
-        return false;
-    }
+    VkResult res = vkCreatePipelineLayout(m_device, &pl, nullptr, &m_layout);
+    assert(res == VK_SUCCESS && "Gagal buat pipeline layout");
 
-    Log::info("Graphics pipeline dibuat");
-    return true;
+    VkGraphicsPipelineCreateInfo pi{};
+    pi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pi.stageCount = 2;
+    pi.pStages = stages;
+    pi.pVertexInputState = &vi;
+    pi.pInputAssemblyState = &ia;
+    pi.pViewportState = &vp;
+    pi.pRasterizationState = &rs;
+    pi.pMultisampleState = &ms;
+    pi.pDepthStencilState = &ds;
+    pi.pColorBlendState = &cb;
+    pi.layout = m_layout;
+    pi.renderPass = renderPass;
+
+    res = vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pi, nullptr, &m_pipeline);
+    assert(res == VK_SUCCESS && "Gagal buat graphics pipeline");
+
+    vkDestroyShaderModule(m_device, fragMod, nullptr);
+    vkDestroyShaderModule(m_device, vertMod, nullptr);
+    LOG_INFO("Pipeline siap");
 }
 
-void Pipeline::destroy() {
-    VkDevice perangkat = m_context ? m_context->getDevice() : VK_NULL_HANDLE;
-    if (perangkat == VK_NULL_HANDLE) return;
-
-    if (m_pipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(perangkat, m_pipeline, nullptr);
-        m_pipeline = VK_NULL_HANDLE;
-    }
-    if (m_pipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(perangkat, m_pipelineLayout, nullptr);
-        m_pipelineLayout = VK_NULL_HANDLE;
-    }
-    if (m_modulVert != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(perangkat, m_modulVert, nullptr);
-        m_modulVert = VK_NULL_HANDLE;
-    }
-    if (m_modulFrag != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(perangkat, m_modulFrag, nullptr);
-        m_modulFrag = VK_NULL_HANDLE;
-    }
+void Pipeline::cleanup()
+{
+    if (m_pipeline) vkDestroyPipeline(m_device, m_pipeline, nullptr);
+    if (m_layout)   vkDestroyPipelineLayout(m_device, m_layout, nullptr);
 }
 
-VkShaderModule Pipeline::buatShaderModule(const std::string& namaFile) {
-    std::ifstream file(namaFile, std::ios::ate | std::ios::binary);
-    if (!file.is_open()) {
-        Log::error("Gagal membuka file shader");
-        Log::error(namaFile.c_str());
-        return VK_NULL_HANDLE;
-    }
+// ------------------------------------------------------------------
+// createModule - buat VkShaderModule dari kode SPIR-V
+// ------------------------------------------------------------------
+VkShaderModule Pipeline::createModule(const std::vector<char>& code)
+{
+    VkShaderModuleCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    ci.codeSize = code.size();
+    ci.pCode = reinterpret_cast<const uint32_t*>(code.data());
 
-    size_t ukuranFile = static_cast<size_t>(file.tellg());
-    std::vector<char> buffer(ukuranFile);
+    VkShaderModule mod;
+    VkResult res = vkCreateShaderModule(m_device, &ci, nullptr, &mod);
+    assert(res == VK_SUCCESS && "Gagal buat shader module");
+    return mod;
+}
+
+// ------------------------------------------------------------------
+// readFile - baca file binary
+// ------------------------------------------------------------------
+std::vector<char> Pipeline::readFile(std::string_view path)
+{
+    std::ifstream file(path.data(), std::ios::binary | std::ios::ate);
+    if (!file) return {};
+
+    size_t size = (size_t)file.tellg();
     file.seekg(0);
-    file.read(buffer.data(), ukuranFile);
-    file.close();
+    std::vector<char> buf(size);
+    file.read(buf.data(), (std::streamsize)size);
+    return buf;
+}
 
-    VkShaderModuleCreateInfo infoBuat{};
-    infoBuat.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    infoBuat.codeSize = buffer.size();
-    infoBuat.pCode = reinterpret_cast<const uint32_t*>(buffer.data());
-
-    VkShaderModule modul;
-    VkResult hasil = vkCreateShaderModule(m_context->getDevice(), &infoBuat, nullptr, &modul);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal membuat shader module");
-        return VK_NULL_HANDLE;
-    }
-
-    return modul;
 }

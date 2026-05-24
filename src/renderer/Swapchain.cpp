@@ -1,416 +1,309 @@
 #include "renderer/Swapchain.hpp"
-#include "renderer/Context.hpp"
-#include "core/Window.hpp"
 #include "core/Log.hpp"
-
+#include <cassert>
 #include <algorithm>
 #include <limits>
 
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
+namespace Vulkana {
 
-Swapchain::Swapchain()
-    : m_context(nullptr)
-    , m_window(nullptr)
-    , m_surface(VK_NULL_HANDLE)
-    , m_swapchain(VK_NULL_HANDLE)
-    , m_imageFormat(VK_FORMAT_UNDEFINED)
-    , m_extent{0, 0}
-    , m_depthImage(VK_NULL_HANDLE)
-    , m_depthAllocation(VK_NULL_HANDLE)
-    , m_depthImageView(VK_NULL_HANDLE)
-    , m_renderPass(VK_NULL_HANDLE)
+Swapchain::~Swapchain()
 {
+    cleanup();
 }
 
-Swapchain::~Swapchain() {
-    destroy();
+// ------------------------------------------------------------------
+// init - buat swapchain dan semua resources terkait
+// ------------------------------------------------------------------
+void Swapchain::init(VkPhysicalDevice gpu, VkDevice device, VkSurfaceKHR surface,
+                     int width, int height)
+{
+    m_device = device;
+    m_gpu = gpu;
+    m_surface = surface;
+
+    createSwapchain(width, height);
+    createImageViews();
+    createDepthResources();
+    createRenderPass();
+    createFramebuffers();
+    LOG_INFO("Swapchain siap");
 }
 
-bool Swapchain::buatSurfaceSwapchain(Context* context, Window* window) {
-    m_context = context;
-    m_window = window;
-
-    // Surface sudah dibuat oleh Context — kita pakai langsung
-    m_surface = context->getSurface();
-    if (m_surface == VK_NULL_HANDLE) {
-        Log::error("Surface dari Context tidak valid");
-        return false;
-    }
-
-    VkResult hasil;
-
-    // Cari format surface + mode present + extent
-    VkSurfaceCapabilitiesKHR kapabilitas;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(context->getPhysicalDevice(), m_surface, &kapabilitas);
-
-    uint32_t jumlahGambar = kapabilitas.minImageCount + 1;
-    if (kapabilitas.maxImageCount > 0 && jumlahGambar > kapabilitas.maxImageCount) {
-        jumlahGambar = kapabilitas.maxImageCount;
-    }
-
-    VkSurfaceFormatKHR formatPermukaan = pilihFormatSurface();
-    m_imageFormat = formatPermukaan.format;
-    VkPresentModeKHR modePresent = pilihModePresent();
-    m_extent = pilihExtent(kapabilitas);
-
-    // Buat swapchain
-    VkSwapchainCreateInfoKHR infoSwapchain{};
-    infoSwapchain.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    infoSwapchain.surface = m_surface;
-    infoSwapchain.minImageCount = jumlahGambar;
-    infoSwapchain.imageFormat = formatPermukaan.format;
-    infoSwapchain.imageColorSpace = formatPermukaan.colorSpace;
-    infoSwapchain.imageExtent = m_extent;
-    infoSwapchain.imageArrayLayers = 1;
-    infoSwapchain.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    infoSwapchain.preTransform = kapabilitas.currentTransform;
-    infoSwapchain.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    infoSwapchain.presentMode = modePresent;
-    infoSwapchain.clipped = VK_TRUE;
-    infoSwapchain.oldSwapchain = VK_NULL_HANDLE;
-
-    hasil = vkCreateSwapchainKHR(context->getDevice(), &infoSwapchain, nullptr, &m_swapchain);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal membuat swapchain");
-        return false;
-    }
-    Log::info("Swapchain dibuat");
-
-    // Ambil gambar-gambar swapchain
-    uint32_t jumlahGambarAktual = 0;
-    vkGetSwapchainImagesKHR(context->getDevice(), m_swapchain, &jumlahGambarAktual, nullptr);
-    m_images.resize(jumlahGambarAktual);
-    vkGetSwapchainImagesKHR(context->getDevice(), m_swapchain, &jumlahGambarAktual, m_images.data());
-
-    // Buat image view untuk setiap gambar
-    m_imageViews.resize(m_images.size());
-    for (size_t i = 0; i < m_images.size(); i++) {
-        VkImageViewCreateInfo infoView{};
-        infoView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        infoView.image = m_images[i];
-        infoView.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        infoView.format = m_imageFormat;
-        infoView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        infoView.subresourceRange.baseMipLevel = 0;
-        infoView.subresourceRange.levelCount = 1;
-        infoView.subresourceRange.baseArrayLayer = 0;
-        infoView.subresourceRange.layerCount = 1;
-
-        hasil = vkCreateImageView(context->getDevice(), &infoView, nullptr, &m_imageViews[i]);
-        if (hasil != VK_SUCCESS) {
-            Log::error("Gagal membuat image view");
-            return false;
-        }
-    }
-    Log::info("Image view dibuat");
-
-    // Depth resources (belum butuh render pass)
-    if (!buatDepthResources()) {
-        Log::error("Gagal membuat resource depth");
-        return false;
-    }
-
-    // Framebuffer dibuat nanti setelah render pass tersedia
-    Log::info("Surface + swapchain siap (framebuffer menyusul)");
-    return true;
-}
-
-bool Swapchain::buatFramebuffers(VkRenderPass renderPass) {
-    m_renderPass = renderPass;
-    VkDevice perangkat = m_context->getDevice();
-
-    // Hapus framebuffer lama jika ada
-    for (auto fb : m_framebuffers) {
-        vkDestroyFramebuffer(perangkat, fb, nullptr);
-    }
+void Swapchain::cleanup()
+{
+    for (auto fb : m_framebuffers)
+        vkDestroyFramebuffer(m_device, fb, nullptr);
     m_framebuffers.clear();
 
-    m_framebuffers.resize(m_imageViews.size());
-    for (size_t i = 0; i < m_imageViews.size(); i++) {
-        VkImageView lampiran[] = { m_imageViews[i], m_depthImageView };
+    if (m_renderPass)
+        vkDestroyRenderPass(m_device, m_renderPass, nullptr);
 
-        VkFramebufferCreateInfo infoFB{};
-        infoFB.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        infoFB.renderPass = m_renderPass;
-        infoFB.attachmentCount = 2;
-        infoFB.pAttachments = lampiran;
-        infoFB.width = m_extent.width;
-        infoFB.height = m_extent.height;
-        infoFB.layers = 1;
+    if (m_depthView)
+        vkDestroyImageView(m_device, m_depthView, nullptr);
+    if (m_depthImage)
+        vkDestroyImage(m_device, m_depthImage, nullptr);
+    if (m_depthMemory)
+        vkFreeMemory(m_device, m_depthMemory, nullptr);
 
-        VkResult hasil = vkCreateFramebuffer(perangkat, &infoFB, nullptr, &m_framebuffers[i]);
-        if (hasil != VK_SUCCESS) {
-            Log::error("Gagal membuat framebuffer");
-            return false;
-        }
+    for (auto& img : m_images)
+    {
+        if (img.view) vkDestroyImageView(m_device, img.view, nullptr);
     }
-    Log::info("Framebuffer dibuat");
-    return true;
-}
-
-void Swapchain::destroy() {
-    VkDevice perangkat = m_context ? m_context->getDevice() : VK_NULL_HANDLE;
-    if (perangkat == VK_NULL_HANDLE) return;
-
-    for (auto fb : m_framebuffers) {
-        vkDestroyFramebuffer(perangkat, fb, nullptr);
-    }
-    m_framebuffers.clear();
-
-    if (m_depthImageView != VK_NULL_HANDLE) {
-        vkDestroyImageView(perangkat, m_depthImageView, nullptr);
-        m_depthImageView = VK_NULL_HANDLE;
-    }
-    if (m_depthImage != VK_NULL_HANDLE && m_context) {
-        vmaDestroyImage(m_context->getAllocator(), m_depthImage, m_depthAllocation);
-        m_depthImage = VK_NULL_HANDLE;
-        m_depthAllocation = VK_NULL_HANDLE;
-    }
-
-    for (auto iv : m_imageViews) {
-        vkDestroyImageView(perangkat, iv, nullptr);
-    }
-    m_imageViews.clear();
     m_images.clear();
 
-    if (m_swapchain != VK_NULL_HANDLE) {
-        vkDestroySwapchainKHR(perangkat, m_swapchain, nullptr);
-        m_swapchain = VK_NULL_HANDLE;
-    }
-    // Surface tidak dihancurkan di sini — dimiliki oleh Context
-    m_surface = VK_NULL_HANDLE;
+    if (m_swapchain)
+        vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
 }
 
-bool Swapchain::recreate(VkRenderPass renderPass) {
-    VkDevice perangkat = m_context->getDevice();
-
-    // Cek extent — skip jika 0 (jendela di-minimize)
-    VkSurfaceCapabilitiesKHR kapabilitas;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_context->getPhysicalDevice(), m_surface, &kapabilitas);
-    VkExtent2D ukuranBaru = pilihExtent(kapabilitas);
-    if (ukuranBaru.width == 0 || ukuranBaru.height == 0) {
-        m_extent = ukuranBaru;
-        Log::info("Rekreasi swapchain ditunda: extent 0");
-        return false;
-    }
-
-    // Simpan resource lama untuk dihancurkan setelah sukses
-    VkSwapchainKHR swapchainLama = m_swapchain;
-    std::vector<VkFramebuffer> framebufferLama = std::move(m_framebuffers);
-    std::vector<VkImageView> imageViewLama = std::move(m_imageViews);
-    VkImageView depthImageViewLama = m_depthImageView;
-    VkImage depthImageLama = m_depthImage;
-    VmaAllocation depthAlokasiLama = m_depthAllocation;
-
-    // Set default agar cleanup tidak ganggu resource baru
-    m_framebuffers.clear();
-    m_imageViews.clear();
-    m_depthImageView = VK_NULL_HANDLE;
-    m_depthImage = VK_NULL_HANDLE;
-    m_depthAllocation = VK_NULL_HANDLE;
-
-    // Buat swapchain baru dulu
-    VkSurfaceFormatKHR formatPermukaan = pilihFormatSurface();
-    VkPresentModeKHR modePresent = pilihModePresent();
-
-    uint32_t jumlahGambar = kapabilitas.minImageCount + 1;
-    if (kapabilitas.maxImageCount > 0 && jumlahGambar > kapabilitas.maxImageCount) {
-        jumlahGambar = kapabilitas.maxImageCount;
-    }
-
-    VkSwapchainCreateInfoKHR infoSwapchain{};
-    infoSwapchain.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    infoSwapchain.surface = m_surface;
-    infoSwapchain.minImageCount = jumlahGambar;
-    infoSwapchain.imageFormat = formatPermukaan.format;
-    infoSwapchain.imageColorSpace = formatPermukaan.colorSpace;
-    infoSwapchain.imageExtent = ukuranBaru;
-    infoSwapchain.imageArrayLayers = 1;
-    infoSwapchain.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    infoSwapchain.preTransform = kapabilitas.currentTransform;
-    infoSwapchain.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    infoSwapchain.presentMode = modePresent;
-    infoSwapchain.clipped = VK_TRUE;
-    infoSwapchain.oldSwapchain = swapchainLama;
-
-    VkSwapchainKHR swapchainBaru = VK_NULL_HANDLE;
-    VkResult hasil = vkCreateSwapchainKHR(perangkat, &infoSwapchain, nullptr, &swapchainBaru);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Rekreasi swapchain gagal");
-        // Kembalikan resource lama
-        m_swapchain = swapchainLama;
-        m_framebuffers = std::move(framebufferLama);
-        m_imageViews = std::move(imageViewLama);
-        m_depthImageView = depthImageViewLama;
-        m_depthImage = depthImageLama;
-        m_depthAllocation = depthAlokasiLama;
-        return false;
-    }
-
-    // Swapchain baru berhasil — hancurkan resource lama
-    for (auto fb : framebufferLama) vkDestroyFramebuffer(perangkat, fb, nullptr);
-    for (auto iv : imageViewLama) vkDestroyImageView(perangkat, iv, nullptr);
-    if (depthImageViewLama != VK_NULL_HANDLE)
-        vkDestroyImageView(perangkat, depthImageViewLama, nullptr);
-    if (depthImageLama != VK_NULL_HANDLE && m_context)
-        vmaDestroyImage(m_context->getAllocator(), depthImageLama, depthAlokasiLama);
-
-    m_swapchain = swapchainBaru;
-    vkDestroySwapchainKHR(perangkat, swapchainLama, nullptr);
-
-    // Update format + extent
-    m_imageFormat = formatPermukaan.format;
-    m_extent = ukuranBaru;
-
-    // Ambil gambar baru
-    uint32_t jumlahGambarAktual = 0;
-    vkGetSwapchainImagesKHR(perangkat, m_swapchain, &jumlahGambarAktual, nullptr);
-    m_images.resize(jumlahGambarAktual);
-    vkGetSwapchainImagesKHR(perangkat, m_swapchain, &jumlahGambarAktual, m_images.data());
-
-    // Image view baru
-    m_imageViews.resize(m_images.size());
-    for (size_t i = 0; i < m_images.size(); i++) {
-        VkImageViewCreateInfo infoView{};
-        infoView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        infoView.image = m_images[i];
-        infoView.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        infoView.format = m_imageFormat;
-        infoView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        infoView.subresourceRange.baseMipLevel = 0;
-        infoView.subresourceRange.levelCount = 1;
-        infoView.subresourceRange.baseArrayLayer = 0;
-        infoView.subresourceRange.layerCount = 1;
-
-        hasil = vkCreateImageView(perangkat, &infoView, nullptr, &m_imageViews[i]);
-        if (hasil != VK_SUCCESS) return false;
-    }
-
-    // Depth baru
-    if (!buatDepthResources()) {
-        Log::error("Gagal membuat ulang resource depth");
-        return false;
-    }
-
-    // Framebuffer baru
-    m_framebuffers.resize(m_imageViews.size());
-    for (size_t i = 0; i < m_imageViews.size(); i++) {
-        VkImageView lampiran[] = { m_imageViews[i], m_depthImageView };
-
-        VkFramebufferCreateInfo infoFB{};
-        infoFB.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        infoFB.renderPass = renderPass;
-        infoFB.attachmentCount = 2;
-        infoFB.pAttachments = lampiran;
-        infoFB.width = m_extent.width;
-        infoFB.height = m_extent.height;
-        infoFB.layers = 1;
-
-        hasil = vkCreateFramebuffer(perangkat, &infoFB, nullptr, &m_framebuffers[i]);
-        if (hasil != VK_SUCCESS) return false;
-    }
-
-    return true;
+void Swapchain::recreate(int width, int height)
+{
+    vkDeviceWaitIdle(m_device);
+    cleanup();
+    createSwapchain(width, height);
+    createImageViews();
+    createDepthResources();
+    createRenderPass();
+    createFramebuffers();
+    LOG_INFO("Swapchain direcreate");
 }
 
-VkSurfaceFormatKHR Swapchain::pilihFormatSurface() {
-    uint32_t jumlahFormat = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(m_context->getPhysicalDevice(), m_surface, &jumlahFormat, nullptr);
-    std::vector<VkSurfaceFormatKHR> formatTersedia(jumlahFormat);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(m_context->getPhysicalDevice(), m_surface, &jumlahFormat, formatTersedia.data());
-
-    for (const auto& fmt : formatTersedia) {
-        if (fmt.format == VK_FORMAT_B8G8R8A8_SRGB &&
-            fmt.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-            return fmt;
-        }
+// ------------------------------------------------------------------
+// Pilih format swapchain (SDR 8-bit preferred)
+// ------------------------------------------------------------------
+static VkSurfaceFormatKHR chooseFormat(const std::vector<VkSurfaceFormatKHR>& formats)
+{
+    for (auto& f : formats)
+    {
+        if (f.format == VK_FORMAT_B8G8R8A8_SRGB && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            return f;
     }
-
-    return formatTersedia[0];
+    return formats[0];
 }
 
-VkPresentModeKHR Swapchain::pilihModePresent() {
-    uint32_t jumlahMode = 0;
-    vkGetPhysicalDeviceSurfacePresentModesKHR(m_context->getPhysicalDevice(), m_surface, &jumlahMode, nullptr);
-    std::vector<VkPresentModeKHR> modeTersedia(jumlahMode);
-    vkGetPhysicalDeviceSurfacePresentModesKHR(m_context->getPhysicalDevice(), m_surface, &jumlahMode, modeTersedia.data());
-
-    for (const auto& mode : modeTersedia) {
-        if (mode == VK_PRESENT_MODE_MAILBOX_KHR) return mode;
+// ------------------------------------------------------------------
+// Pilih mode present (mailbox > fifo)
+// ------------------------------------------------------------------
+static VkPresentModeKHR chooseMode(const std::vector<VkPresentModeKHR>& modes)
+{
+    for (auto& m : modes)
+    {
+        if (m == VK_PRESENT_MODE_MAILBOX_KHR) return m;
     }
-
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-VkExtent2D Swapchain::pilihExtent(const VkSurfaceCapabilitiesKHR& capabilities) {
-    if (capabilities.currentExtent.width != UINT32_MAX) {
-        return capabilities.currentExtent;
-    }
+// ------------------------------------------------------------------
+// Pilih extent (ukuran framebuffer)
+// ------------------------------------------------------------------
+static VkExtent2D chooseExtent(const VkSurfaceCapabilitiesKHR& caps, int w, int h)
+{
+    if (caps.currentExtent.width != UINT32_MAX)
+        return caps.currentExtent;
 
-    int lebar, tinggi;
-    glfwGetFramebufferSize(m_window->getHandle(), &lebar, &tinggi);
-
-    VkExtent2D ukuran = {
-        static_cast<uint32_t>(lebar),
-        static_cast<uint32_t>(tinggi)
-    };
-
-    ukuran.width = std::clamp(ukuran.width,
-        capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
-    ukuran.height = std::clamp(ukuran.height,
-        capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
-
-    return ukuran;
+    VkExtent2D e{};
+    e.width  = std::clamp((uint32_t)w, caps.minImageExtent.width,  caps.maxImageExtent.width);
+    e.height = std::clamp((uint32_t)h, caps.minImageExtent.height, caps.maxImageExtent.height);
+    return e;
 }
 
-bool Swapchain::buatDepthResources() {
-    VkFormat formatDepth = VK_FORMAT_D32_SFLOAT;
+void Swapchain::createSwapchain(int w, int h)
+{
+    VkSurfaceCapabilitiesKHR caps;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_gpu, m_surface, &caps);
 
-    VkImageCreateInfo infoGambar{};
-    infoGambar.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    infoGambar.imageType = VK_IMAGE_TYPE_2D;
-    infoGambar.extent.width = m_extent.width;
-    infoGambar.extent.height = m_extent.height;
-    infoGambar.extent.depth = 1;
-    infoGambar.mipLevels = 1;
-    infoGambar.arrayLayers = 1;
-    infoGambar.format = formatDepth;
-    infoGambar.tiling = VK_IMAGE_TILING_OPTIMAL;
-    infoGambar.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    infoGambar.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    infoGambar.samples = VK_SAMPLE_COUNT_1_BIT;
-    infoGambar.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    uint32_t fmtCount = 0, modeCount = 0;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(m_gpu, m_surface, &fmtCount, nullptr);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(m_gpu, m_surface, &modeCount, nullptr);
+    std::vector<VkSurfaceFormatKHR> formats(fmtCount);
+    std::vector<VkPresentModeKHR> modes(modeCount);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(m_gpu, m_surface, &fmtCount, formats.data());
+    vkGetPhysicalDeviceSurfacePresentModesKHR(m_gpu, m_surface, &modeCount, modes.data());
 
-    VmaAllocationCreateInfo infoAlokasi{};
-    infoAlokasi.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    VkSurfaceFormatKHR fmt = chooseFormat(formats);
+    VkPresentModeKHR mode = chooseMode(modes);
+    m_extent = chooseExtent(caps, w, h);
+    m_format = fmt.format;
 
-    VkResult hasil = vmaCreateImage(m_context->getAllocator(),
-                                     &infoGambar, &infoAlokasi,
-                                     &m_depthImage, &m_depthAllocation, nullptr);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal membuat depth image via VMA");
-        return false;
+    uint32_t imageCount = caps.minImageCount + 1;
+    if (caps.maxImageCount > 0) imageCount = std::min(imageCount, caps.maxImageCount);
+
+    VkSwapchainCreateInfoKHR si{};
+    si.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    si.surface = m_surface;
+    si.minImageCount = imageCount;
+    si.imageFormat = fmt.format;
+    si.imageColorSpace = fmt.colorSpace;
+    si.imageExtent = m_extent;
+    si.imageArrayLayers = 1;
+    si.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    si.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    si.preTransform = caps.currentTransform;
+    si.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    si.presentMode = mode;
+    si.clipped = VK_TRUE;
+
+    VkResult res = vkCreateSwapchainKHR(m_device, &si, nullptr, &m_swapchain);
+    assert(res == VK_SUCCESS && "Gagal buat swapchain");
+}
+
+void Swapchain::createImageViews()
+{
+    uint32_t count = 0;
+    vkGetSwapchainImagesKHR(m_device, m_swapchain, &count, nullptr);
+    std::vector<VkImage> images(count);
+    vkGetSwapchainImagesKHR(m_device, m_swapchain, &count, images.data());
+
+    m_images.resize(count);
+    for (size_t i = 0; i < count; i++)
+    {
+        m_images[i].image = images[i];
+
+        VkImageViewCreateInfo vi{};
+        vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vi.image = images[i];
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = m_format;
+        vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vi.subresourceRange.levelCount = 1;
+        vi.subresourceRange.layerCount = 1;
+
+        VkResult res = vkCreateImageView(m_device, &vi, nullptr, &m_images[i].view);
+        assert(res == VK_SUCCESS && "Gagal buat image view");
+    }
+}
+
+void Swapchain::createDepthResources()
+{
+    VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
+
+    VkImageCreateInfo ii{};
+    ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ii.imageType = VK_IMAGE_TYPE_2D;
+    ii.format = depthFormat;
+    ii.extent = {m_extent.width, m_extent.height, 1};
+    ii.mipLevels = 1;
+    ii.arrayLayers = 1;
+    ii.samples = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ii.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkResult res = vkCreateImage(m_device, &ii, nullptr, &m_depthImage);
+    assert(res == VK_SUCCESS && "Gagal buat depth image");
+
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(m_device, m_depthImage, &req);
+
+    VkMemoryAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = 0; // TODO: cari memory type sesuai properti
+
+    // Cari memory type yang support VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(m_gpu, &memProps);
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++)
+    {
+        if ((req.memoryTypeBits & (1 << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+        {
+            ai.memoryTypeIndex = i;
+            break;
+        }
     }
 
-    VkImageViewCreateInfo infoView{};
-    infoView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    infoView.image = m_depthImage;
-    infoView.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    infoView.format = formatDepth;
-    infoView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    infoView.subresourceRange.baseMipLevel = 0;
-    infoView.subresourceRange.levelCount = 1;
-    infoView.subresourceRange.baseArrayLayer = 0;
-    infoView.subresourceRange.layerCount = 1;
+    res = vkAllocateMemory(m_device, &ai, nullptr, &m_depthMemory);
+    assert(res == VK_SUCCESS && "Gagal alokasi depth memory");
 
-    hasil = vkCreateImageView(m_context->getDevice(), &infoView, nullptr, &m_depthImageView);
-    if (hasil != VK_SUCCESS) {
-        Log::error("Gagal membuat depth image view");
-        return false;
+    vkBindImageMemory(m_device, m_depthImage, m_depthMemory, 0);
+
+    VkImageViewCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.image = m_depthImage;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = depthFormat;
+    vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    vi.subresourceRange.levelCount = 1;
+    vi.subresourceRange.layerCount = 1;
+
+    res = vkCreateImageView(m_device, &vi, nullptr, &m_depthView);
+    assert(res == VK_SUCCESS && "Gagal buat depth image view");
+}
+
+void Swapchain::createRenderPass()
+{
+    VkAttachmentDescription colorAtt{};
+    colorAtt.format = m_format;
+    colorAtt.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAtt.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentDescription depthAtt{};
+    depthAtt.format = VK_FORMAT_D32_SFLOAT;
+    depthAtt.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAtt.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference colorRef{};
+    colorRef.attachment = 0;
+    colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference depthRef{};
+    depthRef.attachment = 1;
+    depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorRef;
+    subpass.pDepthStencilAttachment = &depthRef;
+
+    VkSubpassDependency dep{};
+    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dep.dstSubpass = 0;
+    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    VkAttachmentDescription attachments[] = {colorAtt, depthAtt};
+
+    VkRenderPassCreateInfo rp{};
+    rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rp.attachmentCount = 2;
+    rp.pAttachments = attachments;
+    rp.subpassCount = 1;
+    rp.pSubpasses = &subpass;
+    rp.dependencyCount = 1;
+    rp.pDependencies = &dep;
+
+    VkResult res = vkCreateRenderPass(m_device, &rp, nullptr, &m_renderPass);
+    assert(res == VK_SUCCESS && "Gagal buat render pass");
+}
+
+void Swapchain::createFramebuffers()
+{
+    m_framebuffers.resize(m_images.size());
+
+    for (size_t i = 0; i < m_images.size(); i++)
+    {
+        VkImageView attachments[] = {m_images[i].view, m_depthView};
+
+        VkFramebufferCreateInfo fi{};
+        fi.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fi.renderPass = m_renderPass;
+        fi.attachmentCount = 2;
+        fi.pAttachments = attachments;
+        fi.width = m_extent.width;
+        fi.height = m_extent.height;
+        fi.layers = 1;
+
+        VkResult res = vkCreateFramebuffer(m_device, &fi, nullptr, &m_framebuffers[i]);
+        assert(res == VK_SUCCESS && "Gagal buat framebuffer");
     }
+}
 
-    return true;
 }

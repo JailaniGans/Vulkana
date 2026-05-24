@@ -1,35 +1,34 @@
 #pragma once
 
-#include <vulkan/vulkan.h>
-#include <string>
+// Pipeline - kompilasi shader + graphics pipeline
+
+#include <volk.h>
+#include <string_view>
 #include <vector>
+#include <cstdint>
 
-class Context;
+namespace Vulkana {
 
-/**
- * Pipeline - Pipeline grafis Vulkan dan pengelola shader.
- * Memuat SPIR-V dan membangun VkPipeline + VkPipelineLayout.
- */
 class Pipeline {
 public:
-    Pipeline();
+    Pipeline() = default;
     ~Pipeline();
 
-    bool create(Context* context,
-                VkExtent2D extent,
-                VkRenderPass renderPass,
-                VkDescriptorSetLayout descriptorSetLayout);
-    void destroy();
+    void init(VkDevice device, VkRenderPass renderPass,
+              std::string_view vertPath, std::string_view fragPath,
+              VkExtent2D extent);
+    void cleanup();
 
-    VkPipeline       getPipeline() const { return m_pipeline; }
-    VkPipelineLayout getLayout()   const { return m_pipelineLayout; }
+    VkPipeline handle() const { return m_pipeline; }
+    VkPipelineLayout layout() const { return m_layout; }
 
 private:
-    Context*    m_context;
-    VkPipeline  m_pipeline;
-    VkPipelineLayout m_pipelineLayout;
-    VkShaderModule m_modulVert;
-    VkShaderModule m_modulFrag;
+    VkShaderModule createModule(const std::vector<char>& code);
+    std::vector<char> readFile(std::string_view path);
 
-    VkShaderModule buatShaderModule(const std::string& namaFile);
+    VkDevice m_device = VK_NULL_HANDLE;
+    VkPipeline m_pipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_layout = VK_NULL_HANDLE;
 };
+
+}
