@@ -1,8 +1,17 @@
 #version 450
 
-layout(location = 0) in vec3 fragColor;
-layout(location = 0) out vec4 outColor;
+/*
+ * scene.frag - Fragment shader untuk segitiga demo.
+ * Input:
+ *   location 0: warna terinterpolasi dari vertex shader
+ * Output:
+ *   location 0: warna final ke framebuffer
+ */
+
+layout(location = 0) in vec3 inWarna;
+
+layout(location = 0) out vec4 outWarna;
 
 void main() {
-    outColor = vec4(fragColor, 1.0);
+    outWarna = vec4(inWarna, 1.0);
 }
