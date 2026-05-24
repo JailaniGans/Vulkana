@@ -1,1 +1,13 @@
-C:\Users\anakb\Documents\learn\project_game\Vulkana\main.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\main.obj
+C:\Users\anakb\Documents\learn\project_game\Vulkana\src\main.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\main.obj
+C:\Users\anakb\Documents\learn\project_game\Vulkana\src\core\Application.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\Application.obj
+C:\Users\anakb\Documents\learn\project_game\Vulkana\src\core\Engine.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\Engine.obj
+C:\Users\anakb\Documents\learn\project_game\Vulkana\src\core\Window.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\Window.obj
+C:\Users\anakb\Documents\learn\project_game\Vulkana\src\core\Input.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\Input.obj
+C:\Users\anakb\Documents\learn\project_game\Vulkana\src\core\Log.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\Log.obj
+C:\Users\anakb\Documents\learn\project_game\Vulkana\src\ecs\Systems.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\Systems.obj
+C:\Users\anakb\Documents\learn\project_game\Vulkana\src\renderer\Context.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\Context.obj
+C:\Users\anakb\Documents\learn\project_game\Vulkana\src\renderer\Swapchain.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\Swapchain.obj
+C:\Users\anakb\Documents\learn\project_game\Vulkana\src\renderer\Pipeline.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\Pipeline.obj
+C:\Users\anakb\Documents\learn\project_game\Vulkana\src\renderer\Buffer.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\Buffer.obj
+C:\Users\anakb\Documents\learn\project_game\Vulkana\src\renderer\Descriptor.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\Descriptor.obj
+C:\Users\anakb\Documents\learn\project_game\Vulkana\src\renderer\Renderer.cpp;C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.dir\Debug\Renderer.obj
