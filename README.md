@@ -399,6 +399,78 @@ onCleanup()
 
 ---
 
+## Cara Berkontribusi
+
+Project ini adalah proyek sampingan pribadi untuk belajar,
+tapi kontribusi tetap terbuka. Berikut cara ikut serta:
+
+### Fork & Clone
+
+```bash
+# 1. Fork repo di GitHub
+# 2. Clone fork ke lokal
+git clone https://github.com/username-mu/Vulkana.git
+cd Vulkana
+
+# 3. Init submodule
+git submodule update --init --recursive
+```
+
+### Branch
+
+```bash
+git checkout -b fitur-nama-fitur
+```
+
+Gunakan nama branch yang deskriptif: `fix-swapchain-crash`,
+`tambah-shadow-mapping`, `refactor-pipeline`, dll.
+
+### Commit
+
+```bash
+git add .
+git commit -m "Deskripsi singkat perubahan"
+```
+
+- Tulis commit message dalam bahasa Inggris.
+- Awali dengan kata kerja: `Add`, `Fix`, `Refactor`, `Remove`, `Update`.
+- Satu commit untuk satu perubahan logis.
+
+### Push & Pull Request
+
+```bash
+git push origin fitur-nama-fitur
+```
+
+Buka Pull Request ke branch `main` repository asli
+(`JailaniGans/Vulkana`). Sertakan deskripsi:
+
+- Apa yang diubah
+- Kenapa diubah
+- Screenshot (jika menyangkut visual)
+
+### Panduan Kode
+
+- **C++17** — tidak boleh pakai fitur C++20.
+- **Namespace** — semua kode di dalam `namespace Vulkana {}`.
+- **Komen** — bahasa Indonesia untuk komentar internal.
+- **Format** — PascalCase untuk class/fungsi, camelCase untuk variabel.
+- **Tidak ada path hardcoded** — semua path relatif atau dari CMake define.
+- **Volk** — semua akses Vulna lewat Volk, jangan include `<vulkan.h>` langsung.
+- **VMA** — semua alokasi memory GPU lewat VMA, jangan `vkAllocateMemory` langsung.
+
+### Build & Test
+
+```bash
+cmake -S . -B build
+cmake --build build
+./build/Debug/Vulkana.exe
+```
+
+Pastikan tidak ada warning baru di kompilasi.
+
+---
+
 ## Credit
 
 Vulkana © 2026 — Proyek sampingan sebagai sarana belajar pemrograman grafis.
