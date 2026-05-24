@@ -1,8 +1,0 @@
-================================================================================
-Linker Errors
-Generated: 2026-05-24T15:13:33.305Z
-Total Errors: 1
-================================================================================
-
-[LNK1104] (MSVC)
-cannot open file 'glfw3.lib' [C:\Users\anakb\Documents\learn\project_game\Vulkana\build\Vulkana.vcxproj]

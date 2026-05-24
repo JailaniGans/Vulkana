@@ -1,3 +1,0 @@
-C:/Users/anakb/Documents/learn/project_game/Vulkana/build/CMakeFiles/Vulkana.dir
-C:/Users/anakb/Documents/learn/project_game/Vulkana/build/CMakeFiles/ALL_BUILD.dir
-C:/Users/anakb/Documents/learn/project_game/Vulkana/build/CMakeFiles/ZERO_CHECK.dir
